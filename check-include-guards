@@ -1,0 +1,272 @@
+#!/usr/bin/perl
+#
+# See if a C/C++ source file header has a well-formed #include guard.
+#
+# Well-formed:
+#
+#   optional-white-space-and-comments
+#   #ifndef symbol
+#   anything
+#   #endif
+#   optional-white-space-and-comments
+#
+# Gcc recognizes well-formed #include guards, and does automatic reverse
+# include guards.
+#
+
+# This software is distributed under the "Simplified BSD license":
+#
+# Copyright Michael Cook <michael@waxrat.com>. All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#    1. Redistributions of source code must retain the above copyright notice,
+#       this list of conditions and the following disclaimer.
+#
+#    2. Redistributions in binary form must reproduce the above copyright
+#       notice, this list of conditions and the following disclaimer in the
+#       documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY MICHAEL COOK ''AS IS'' AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+# EVENT SHALL MICHAEL COOK OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+# INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+# THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# The views and conclusions contained in the software and documentation are
+# those of the authors and should not be interpreted as representing official
+# policies, either expressed or implied, of Michael Cook.
+
+use strict;
+use warnings;
+use Getopt::Long;
+use Cwd;
+use feature qw(switch);
+
+my ($THIS) = $0 =~ m%([^/]+)$%;
+my $USAGE = "usage: $THIS [files...]\n";
+
+my $BASE;
+my $STYLE = 0;
+my $PREFIX;
+my $DEBUG;
+
+Getopt::Long::config("bundling");
+GetOptions
+("base=s" => \$BASE,
+ #
+ # Indicate what the base source directory is.  This portion of the source
+ # file name is removed before deriving the expected include guard symbol
+ # name.  By default, ^.*include/ is removed.
+ #
+
+ "style|s=i" => \$STYLE,
+ #
+ # What style of include guard symbol to use:
+ #  0: PATH_BASE_H
+ #  1: BASE_H
+ #
+
+ "prefix=s" => \$PREFIX,
+ #
+ # Make sure every include guard symbol has this prefix (regex).
+ #
+
+ "debug" => \$DEBUG,
+ #
+ # Debug mode.
+ #
+)
+or die $USAGE;
+
+$BASE .= "/"
+    if defined($BASE) && $BASE !~ m%/$%;
+
+sub abs_path
+{
+    local $_ = shift;
+    unless (m%^/%)
+    {
+	my $cwd = getcwd;
+	$cwd .= "/"
+	    unless $cwd eq "/";
+	$_ = "$cwd$_";
+    }
+    return $_;
+}
+
+sub expected_guard
+{
+    my ($filename) = shift;
+
+    warn "> expected_guard($filename)..." if $DEBUG;
+
+    my $symbol = $filename;
+    given ($STYLE)
+    {
+	when (0)
+	{
+	    $symbol =~ s%^\./%%;
+	    $symbol = abs_path $symbol;
+	    if (defined($BASE))
+	    {
+		$symbol =~ s/^\Q$BASE\E//;
+	    }
+	    else
+	    {
+		$symbol =~ s%^.*include/%%;
+	    }
+	    $symbol =~ s/\W+/_/g;
+	    $symbol = uc $symbol;
+	}
+	when (1)
+	{
+	    $symbol =~ s%^.*/%%;
+	    $symbol =~ s/\W+/_/g;
+	    $symbol = uc $symbol;
+	}
+	default
+	{
+	    die "unknown style '$STYLE'";
+	}
+    }
+
+    $symbol = "$PREFIX$symbol"
+	if defined($PREFIX) && $symbol !~ /^\Q$PREFIX\E/;
+
+    warn "> expected_guard |$symbol|" if $DEBUG;
+    return $symbol;
+}
+
+#
+# Strip all comments.  Beware of string literals that might be mistaken for
+# comments (e.g., "/*"), and character literals that might be mistaken for
+# string literals (e.g., '"').
+#
+sub strip_comments
+{
+    my $filename = shift;
+    local $_ = shift;
+
+    my $result = "";
+    while (m%/\*|//|\'|\"%)
+    {
+	my ($before, $match, $after) = ($`, $&, $');
+	#warn "\f\n", "-" x 78, "\nmatch=($match) before=($before) after=($after)\n", "-" x 78 if $DEBUG;
+	$result .= $before;
+	given ($match)
+	{
+	    when ("/*")
+	    {
+		$result .= " ";
+		$after =~ m%\*/%
+		    or warn "unbalanced /*-comment in $filename";
+		$after = $';
+	    }
+	    when ("//")
+	    {
+		$result .= "\n";
+		$after =~ m%\n%
+		    or warn "unterminated //-comment in $filename";
+		$after = $';
+	    }
+	    when ("'")
+	    {
+		$result .= "'.'";
+		for (;;)
+		{
+		    unless ($after =~ m%\\.|\'%)
+		    {
+			warn "unbalanced single-quote literal in $filename";
+			last;
+		    }
+		    $after = $';
+		    last if $& eq "'";
+		}
+	    }
+	    when ("\"")
+	    {
+		$result .= '"..."';
+		for (;;)
+		{
+		    unless ($after =~ m%\\.|\"%)
+		    {
+			warn "unbalanced double-quote literal in $filename";
+			last;
+		    }
+		    $after = $';
+		    last if $& eq '"';
+		}
+	    }
+	    default {
+		die "oops ($match)";
+	    }
+	}
+	$_ = $after;
+    }
+    return "$result$_";
+}
+
+my $exit = 0;
+for my $arg (@ARGV)
+{
+    my $fh;
+    unless (open($fh, $arg))
+    {
+        warn "open $arg: $!";
+	$exit = 1;
+        next;
+    }
+    my @t = <$fh>;
+    $fh = undef;
+    my $num_lines = @t;
+    warn "> num_lines $num_lines in $arg\n" if $DEBUG;
+    my $stripped = strip_comments $arg, join "", @t;
+    warn "-" x 78, "\n", $stripped, "-" x 78, "\n" if $DEBUG;
+
+    my $first_line = 1;
+    while (@t)
+    {
+	last if shift(@t) =~ /^\s*\#/;
+	++$first_line;
+    }
+    undef @t;
+
+    my $expected = expected_guard $arg;
+    warn "> expect '$expected'" if $DEBUG;
+
+    if ($stripped =~ /^\s*\#[ \t]*ifndef[ \t]+(\w+)[ \t]*\n/)
+    {
+	my $actual = $1;
+	warn "> actual '$actual'" if $DEBUG;
+	unless ($actual eq $expected)
+	{
+	    warn "$arg:$first_line: include guard symbol is:\n";
+	    warn "$actual\n";
+	    warn "$arg:$first_line: but it should be:\n";
+	    warn "$expected\n";
+	    warn "\n";
+	    $exit = 1;
+	}
+    }
+    else
+    {
+	warn "$arg:$first_line: no well-formed include guard; expected:\n";
+	warn "#ifndef $expected\n";
+	warn "\n";
+	$exit = 1;
+    }
+
+    unless ($stripped =~ /\n[ \t]*\#[ \t]*endif[ \t]*\n\s*$/)
+    {
+	warn "$arg:$num_lines: no well-formed include guard #endif\n";
+	$exit = 1;
+    }
+}
+exit($exit);
