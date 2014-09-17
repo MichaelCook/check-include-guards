@@ -50,7 +50,7 @@ use Cwd;
 use feature qw(switch);
 
 my ($THIS) = $0 =~ m%([^/]+)$%;
-my $USAGE = "usage: $THIS [files...]\n";
+my $USAGE = "usage: $THIS files...\n";
 
 my $BASE;
 my $STYLE = 0;
@@ -70,7 +70,11 @@ GetOptions
  #
  # What style of include guard symbol to use:
  #  0: PATH_BASE_H
- #  1: BASE_H
+ #  1: BASE_H -- BASE is the basename of the header, i.e., everything after
+ #     the last slash.
+ #  2: BASE_H -- If the pathname contains "include/", BASE is everything after
+ #     that, e.g. "/usr/include/bits/time.h" becomes "BITS_TIME_H".
+ #     Otherwise, same as style 1.
  #
 
  "prefix=s" => \$PREFIX,
@@ -84,6 +88,8 @@ GetOptions
  #
 )
 or die $USAGE;
+
+@ARGV or die $USAGE;
 
 $BASE .= "/"
     if defined($BASE) && $BASE !~ m%/$%;
@@ -128,6 +134,13 @@ sub expected_guard
 	when (1)
 	{
 	    $symbol =~ s%^.*/%%;
+	    $symbol =~ s/\W+/_/g;
+	    $symbol = uc $symbol;
+	}
+	when (2)
+	{
+	    $symbol =~ s%^.*include/%%
+		or $symbol =~ s%^.*/%%;
 	    $symbol =~ s/\W+/_/g;
 	    $symbol = uc $symbol;
 	}
